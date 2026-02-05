@@ -1,0 +1,322 @@
+---
+- name: Validación TLS de certificados por URL (PIVOTE RHEL9 - ec2-user)
+  hosts: pivote
+  gather_facts: true
+  become: true
+
+  vars:
+    # === INPUT ===
+    urls_certificados: []
+
+    dias_alerta: 90
+    dias_reenvio_alerta: 10
+    modo_sin_smtp: true   # En lab: true. En cliente: false cuando SMTP esté listo.
+
+    # Persistencia (LAB friendly)
+    pivot_state_dir: /home/ec2-user/cert_monitor/state
+    pivot_output_dir: /home/ec2-user/cert_monitor/output
+    estado_filename: estado_notificacion.json
+    csv_filename: inventario_certificados.csv
+
+    # SMTP (se llena cuando el cliente lo entregue)
+    smtp_host: ""
+    smtp_port: 25
+    smtp_use_starttls: false
+    smtp_username: ""
+    smtp_password: ""
+    correo_from: ""
+    correo_to: []
+
+    ambiente_nombre: "LAB SSL DEMO"
+
+  tasks:
+    - name: Validar variables mínimas
+      assert:
+        that:
+          - urls_certificados is iterable
+          - urls_certificados | length > 0
+      fail_msg: "Falta urls_certificados (lista de URLs HTTPS)."
+
+    - name: Asegurar paquetes básicos en pivote (RHEL9)
+      package:
+        name:
+          - openssl
+          - python3
+        state: present
+
+    - name: Crear directorios persistentes (state/output)
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+      loop:
+        - "{{ pivot_state_dir }}"
+        - "{{ pivot_output_dir }}"
+
+    - name: Definir paths de trabajo
+      set_fact:
+        estado_path: "{{ pivot_state_dir }}/{{ estado_filename }}"
+        csv_path: "{{ pivot_output_dir }}/{{ csv_filename }}"
+      changed_when: false
+
+    - name: Cargar estado previo si existe
+      slurp:
+        src: "{{ estado_path }}"
+      register: prev_state_raw
+      failed_when: false
+      changed_when: false
+
+    - name: Parsear estado previo
+      set_fact:
+        prev_state: "{{ (prev_state_raw.content | b64decode | from_json) if (prev_state_raw is defined and prev_state_raw.content is defined) else {} }}"
+      changed_when: false
+
+    - name: Inicializar estructuras
+      set_fact:
+        rows: []
+        alert_rows: []
+      changed_when: false
+
+    - name: Procesar cada URL (TLS -> principal/intermedio/CA -> expiración)
+      vars:
+        url: "{{ item }}"
+      block:
+        - name: Normalizar host/puerto (SNI)
+          set_fact:
+            host_only: "{{ (url | regex_replace('^https?://', '')).split('/')[0].split(':')[0] }}"
+            port: >-
+              {{
+                ((url | regex_replace('^https?://', '')).split('/')[0].split(':')[1])
+                if (':' in (url | regex_replace('^https?://', '')).split('/')[0])
+                else '443'
+              }}
+          changed_when: false
+
+        - name: Obtener cadena TLS (openssl s_client)
+          shell: |
+            set -o pipefail
+            echo | openssl s_client -servername "{{ host_only }}" -connect "{{ host_only }}:{{ port }}" -showcerts 2>/dev/null
+          register: tls
+          changed_when: false
+          failed_when: false
+
+        - name: Parsear certs y calcular expiración (Python+OpenSSL)
+          shell: |
+            python3 - << 'PY'
+            import re, json, subprocess, datetime, email.utils
+
+            url = {{ url | to_json }}
+            data = {{ (tls.stdout | default('')) | to_json }}
+            dias_alerta = int({{ dias_alerta }})
+
+            certs = re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", data, re.S)
+            pems = ["-----BEGIN CERTIFICATE-----"+c+"-----END CERTIFICATE-----" for c in certs]
+
+            def meta(pem: str):
+              if not pem:
+                return {"exists": False, "subject": "NO EXISTE", "enddate": "NO EXISTE", "days": "NO EXISTE"}
+              p = subprocess.run(["openssl","x509","-noout","-subject","-enddate"],
+                                 input=pem.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              out = p.stdout.decode(errors="ignore").splitlines()
+              subj = next((l.replace("subject=","").strip() for l in out if l.startswith("subject=")), "DESCONOCIDO")
+              end  = next((l.replace("notAfter=","").strip() for l in out if l.startswith("notAfter=")), "")
+              if not end:
+                return {"exists": True, "subject": subj, "enddate": "DESCONOCIDO", "days": "NO EXISTE"}
+              dt = email.utils.parsedate_to_datetime(end)
+              if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+              now = datetime.datetime.now(datetime.timezone.utc)
+              days = (dt - now).days
+              return {"exists": True, "subject": subj, "enddate": end, "days": days}
+
+            principal_pem = pems[0] if len(pems) > 0 else ""
+            inter_pem     = pems[1] if len(pems) > 1 else ""
+            ca_pem        = pems[-1] if len(pems) > 2 else ""
+
+            principal = meta(principal_pem)
+            inter     = meta(inter_pem)
+            ca        = meta(ca_pem)
+
+            def in_alert(m):
+              return isinstance(m.get("days"), int) and m["days"] <= dias_alerta
+
+            estado = "ALERTA" if (in_alert(principal) or in_alert(inter) or in_alert(ca)) else "OK"
+
+            print(json.dumps({
+              "url": url,
+              "principal_subject": principal["subject"],
+              "principal_end": principal["enddate"],
+              "principal_days": principal["days"],
+              "inter_subject": inter["subject"],
+              "inter_end": inter["enddate"],
+              "inter_days": inter["days"],
+              "ca_subject": ca["subject"],
+              "ca_end": ca["enddate"],
+              "ca_days": ca["days"],
+              "estado": estado
+            }))
+            PY
+          register: parsed
+          changed_when: false
+          failed_when: false
+
+        - name: Acumular resultados
+          set_fact:
+            row: "{{ parsed.stdout | from_json }}"
+            rows: "{{ rows + [ (parsed.stdout | from_json) ] }}"
+            alert_rows: "{{ alert_rows + ( [ (parsed.stdout | from_json) ] if ((parsed.stdout | from_json).estado == 'ALERTA') else [] ) }}"
+          changed_when: false
+
+      loop: "{{ urls_certificados }}"
+
+    - name: Generar inventario CSV
+      copy:
+        dest: "{{ csv_path }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+        content: |
+          URL,Cert_Principal,Vigencia_Principal,Dias_Principal,Cert_Intermedio,Vigencia_Intermedio,Dias_Intermedio,Cert_CA,Vigencia_CA,Dias_CA,Estado
+          {% for r in rows %}
+          {{ r.url }},{{ r.principal_subject | replace(',', ' ') }},{{ r.principal_end | replace(',', ' ') }},{{ r.principal_days }},{{ r.inter_subject | replace(',', ' ') }},{{ r.inter_end | replace(',', ' ') }},{{ r.inter_days }},{{ r.ca_subject | replace(',', ' ') }},{{ r.ca_end | replace(',', ' ') }},{{ r.ca_days }},{{ r.estado }}
+          {% endfor %}
+
+    - name: Definir banderas para envío según política
+      set_fact:
+        now_iso: "{{ ansible_date_time.iso8601 }}"
+        has_alerts: "{{ (alert_rows | length) > 0 }}"
+        last_alert_iso: "{{ prev_state.last_alert_iso | default('') }}"
+        last_monthly_iso: "{{ prev_state.last_monthly_iso | default('') }}"
+      changed_when: false
+
+    - name: Calcular si toca enviar ALERTA (cada 10 días)
+      set_fact:
+        send_alert: >-
+          {{
+            has_alerts and (
+              last_alert_iso == '' or
+              ((now_iso | to_datetime) - (last_alert_iso | to_datetime)).days >= dias_reenvio_alerta
+            )
+          }}
+      changed_when: false
+
+    - name: Calcular si toca enviar mensual (sin alertas)
+      set_fact:
+        send_monthly: >-
+          {{
+            (not has_alerts) and (
+              last_monthly_iso == '' or
+              ((now_iso | to_datetime).month != (last_monthly_iso | to_datetime).month) or
+              ((now_iso | to_datetime).year != (last_monthly_iso | to_datetime).year)
+            )
+          }}
+      changed_when: false
+
+    - name: Preparar asunto y cuerpo del correo
+      set_fact:
+        mail_subject: >-
+          {{
+            ('[ALERTA SSL] ' ~ ambiente_nombre ~ ' - Certificados próximos a vencer')
+            if has_alerts else
+            ('[INFO SSL] ' ~ ambiente_nombre ~ ' - Reporte mensual sin alertas')
+          }}
+        mail_body: |
+          {% if has_alerts %}
+          Se detectaron certificados próximos a vencer (≤ {{ dias_alerta }} días).
+
+          Resumen:
+          - Total URLs evaluadas: {{ rows | length }}
+          - URLs en umbral: {{ alert_rows | length }}
+
+          Detalle (solo en umbral):
+          {% for r in alert_rows %}
+          URL: {{ r.url }}
+            - Principal: {{ r.principal_days }} días | Expira: {{ r.principal_end }}
+            - Intermedio: {{ r.inter_days }} días | Expira: {{ r.inter_end }}
+            - CA: {{ r.ca_days }} días | Expira: {{ r.ca_end }}
+          {% endfor %}
+
+          Se adjunta inventario CSV: {{ csv_filename }}.
+          Política: mientras existan certificados en umbral, se notificará cada {{ dias_reenvio_alerta }} días.
+          {% else %}
+          Reporte mensual TLS.
+          No se detectaron certificados próximos a vencer (≤ {{ dias_alerta }} días).
+          Total URLs evaluadas: {{ rows | length }}
+
+          Se adjunta inventario CSV: {{ csv_filename }}.
+          {% endif %}
+      changed_when: false
+
+    - name: Enviar correo vía SMTP (solo si aplica y no estamos en modo_sin_smtp)
+      shell: |
+        python3 - << 'PY'
+        import os, ssl, smtplib
+        from email.message import EmailMessage
+
+        smtp_host = {{ smtp_host | to_json }}
+        smtp_port = int({{ smtp_port }})
+        use_starttls = bool({{ smtp_use_starttls | to_json }})
+        username = {{ smtp_username | to_json }}
+        password = {{ smtp_password | to_json }}
+        mail_from = {{ correo_from | to_json }}
+        mail_to = {{ correo_to | to_json }}
+        subject = {{ mail_subject | to_json }}
+        body = {{ mail_body | to_json }}
+        attach_path = {{ csv_path | to_json }}
+
+        if not smtp_host:
+          raise SystemExit("smtp_host vacío. Configure SMTP o active modo_sin_smtp.")
+
+        msg = EmailMessage()
+        msg["From"] = mail_from
+        msg["To"] = ", ".join(mail_to)
+        msg["Subject"] = subject
+        msg.set_content(body)
+
+        with open(attach_path, "rb") as f:
+          msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=os.path.basename(attach_path))
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+          s.ehlo()
+          if use_starttls:
+            ctx = ssl.create_default_context()
+            s.starttls(context=ctx)
+            s.ehlo()
+          if username and password:
+            s.login(username, password)
+          s.send_message(msg)
+
+        print("Correo enviado OK")
+        PY
+      args:
+        executable: /bin/bash
+      register: mail_result
+      changed_when: false
+      failed_when: false
+      when: (send_alert or send_monthly) and (not modo_sin_smtp)
+
+    - name: Actualizar estado persistente (cuando se envía por política)
+      copy:
+        dest: "{{ estado_path }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+        content: >-
+          {{
+            {
+              "last_alert_iso": (now_iso if send_alert else last_alert_iso),
+              "last_monthly_iso": (now_iso if send_monthly else last_monthly_iso)
+            } | to_nice_json
+          }}
+      when: (send_alert or send_monthly)
+
+    - name: Resumen final
+      debug:
+        msg:
+          - "CSV: {{ csv_path }}"
+          - "Estado: {{ estado_path }}"
+          - "URLs evaluadas: {{ rows | length }}"
+          - "URLs en alerta: {{ alert_rows | length }}"
+          - "send_alert={{ send_alert }}, send_monthly={{ send_monthly }}"

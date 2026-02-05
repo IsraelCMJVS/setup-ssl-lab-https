@@ -1,6 +1,6 @@
 ---
 - name: Setup LAB HTTPS con cadena completa (Root + Intermedio + Leaf) para pruebas TLS
-  hosts: pivote
+  hosts: all
   gather_facts: true
   become: true
 

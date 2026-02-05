@@ -35,7 +35,7 @@
         that:
           - urls_certificados is iterable
           - urls_certificados | length > 0
-      fail_msg: "Falta urls_certificados (lista de URLs HTTPS)."
+        fail_msg: "Falta urls_certificados (lista de URLs HTTPS)."
 
     - name: Asegurar paquetes básicos en pivote (RHEL9)
       package:

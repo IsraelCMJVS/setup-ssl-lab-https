@@ -1,0 +1,323 @@
+---
+- name: Setup LAB HTTPS con cadena completa (Root + Intermedio + Leaf) para pruebas TLS
+  hosts: pivote
+  gather_facts: true
+  become: true
+
+  vars:
+    lab_root: /home/ec2-user/ssl-lab
+    certs_dir: "{{ lab_root }}/certs"
+    www_dir: "{{ lab_root }}/www"
+
+    # Puertos de prueba
+    port_soon: 8443
+    port_ok: 9443
+
+    # CNs (si usas /etc/hosts puedes apuntarlos a 127.0.0.1)
+    cn_soon: app-soon.lab
+    cn_ok: app-ok.lab
+
+    # Vigencias
+    days_root: 3650
+    days_intermediate: 180
+    days_soon: 30
+    days_ok: 300
+
+    # Servicios systemd
+    svc_soon: ssl-lab-soon
+    svc_ok: ssl-lab-ok
+
+  tasks:
+    - name: Instalar paquetes requeridos
+      package:
+        name:
+          - openssl
+          - python3
+          - firewalld
+        state: present
+
+    - name: Asegurar directorios del lab (ec2-user)
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+      loop:
+        - "{{ lab_root }}"
+        - "{{ certs_dir }}"
+        - "{{ www_dir }}"
+
+    - name: Crear página de prueba
+      copy:
+        dest: "{{ www_dir }}/index.html"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+        content: |
+          <html>
+          <head><title>SSL LAB</title></head>
+          <body>
+            <h1>SSL LAB OK</h1>
+            <p>Si ves esto, el HTTPS lab está funcionando.</p>
+          </body>
+          </html>
+
+    # ---------------------------
+    # Generación CA Root
+    # ---------------------------
+    - name: Generar CA Root (key)
+      command: openssl genrsa -out "{{ certs_dir }}/ca.key" 2048
+      args:
+        creates: "{{ certs_dir }}/ca.key"
+
+    - name: Generar CA Root (crt)
+      command: >
+        openssl req -x509 -new -nodes -key "{{ certs_dir }}/ca.key" -sha256
+        -days {{ days_root }}
+        -subj "/C=MX/O=LAB/CN=LAB-ROOT-CA"
+        -out "{{ certs_dir }}/ca.crt"
+      args:
+        creates: "{{ certs_dir }}/ca.crt"
+
+    # ---------------------------
+    # Intermedio
+    # ---------------------------
+    - name: Generar Intermedio (key)
+      command: openssl genrsa -out "{{ certs_dir }}/inter.key" 2048
+      args:
+        creates: "{{ certs_dir }}/inter.key"
+
+    - name: Generar Intermedio (csr)
+      command: >
+        openssl req -new -key "{{ certs_dir }}/inter.key"
+        -subj "/C=MX/O=LAB/CN=LAB-INTERMEDIATE"
+        -out "{{ certs_dir }}/inter.csr"
+      args:
+        creates: "{{ certs_dir }}/inter.csr"
+
+    - name: Firmar Intermedio con Root CA
+      command: >
+        openssl x509 -req -in "{{ certs_dir }}/inter.csr"
+        -CA "{{ certs_dir }}/ca.crt" -CAkey "{{ certs_dir }}/ca.key"
+        -CAcreateserial
+        -out "{{ certs_dir }}/inter.crt"
+        -days {{ days_intermediate }} -sha256
+      args:
+        creates: "{{ certs_dir }}/inter.crt"
+
+    # ---------------------------
+    # Leaf SOON (30 días)
+    # ---------------------------
+    - name: Generar leaf SOON (key)
+      command: openssl genrsa -out "{{ certs_dir }}/app_soon.key" 2048
+      args:
+        creates: "{{ certs_dir }}/app_soon.key"
+
+    - name: Generar leaf SOON (csr)
+      command: >
+        openssl req -new -key "{{ certs_dir }}/app_soon.key"
+        -subj "/C=MX/O=LAB/CN={{ cn_soon }}"
+        -out "{{ certs_dir }}/app_soon.csr"
+      args:
+        creates: "{{ certs_dir }}/app_soon.csr"
+
+    - name: Firmar leaf SOON con Intermedio
+      command: >
+        openssl x509 -req -in "{{ certs_dir }}/app_soon.csr"
+        -CA "{{ certs_dir }}/inter.crt" -CAkey "{{ certs_dir }}/inter.key"
+        -CAcreateserial
+        -out "{{ certs_dir }}/app_soon.crt"
+        -days {{ days_soon }} -sha256
+      args:
+        creates: "{{ certs_dir }}/app_soon.crt"
+
+    - name: Construir fullchain SOON (leaf + inter + root)
+      shell: |
+        cat "{{ certs_dir }}/app_soon.crt" "{{ certs_dir }}/inter.crt" "{{ certs_dir }}/ca.crt" > "{{ certs_dir }}/app_soon.fullchain.pem"
+      args:
+        creates: "{{ certs_dir }}/app_soon.fullchain.pem"
+
+    # ---------------------------
+    # Leaf OK (300 días)
+    # ---------------------------
+    - name: Generar leaf OK (key)
+      command: openssl genrsa -out "{{ certs_dir }}/app_ok.key" 2048
+      args:
+        creates: "{{ certs_dir }}/app_ok.key"
+
+    - name: Generar leaf OK (csr)
+      command: >
+        openssl req -new -key "{{ certs_dir }}/app_ok.key"
+        -subj "/C=MX/O=LAB/CN={{ cn_ok }}"
+        -out "{{ certs_dir }}/app_ok.csr"
+      args:
+        creates: "{{ certs_dir }}/app_ok.csr"
+
+    - name: Firmar leaf OK con Intermedio
+      command: >
+        openssl x509 -req -in "{{ certs_dir }}/app_ok.csr"
+        -CA "{{ certs_dir }}/inter.crt" -CAkey "{{ certs_dir }}/inter.key"
+        -CAcreateserial
+        -out "{{ certs_dir }}/app_ok.crt"
+        -days {{ days_ok }} -sha256
+      args:
+        creates: "{{ certs_dir }}/app_ok.crt"
+
+    - name: Construir fullchain OK (leaf + inter + root)
+      shell: |
+        cat "{{ certs_dir }}/app_ok.crt" "{{ certs_dir }}/inter.crt" "{{ certs_dir }}/ca.crt" > "{{ certs_dir }}/app_ok.fullchain.pem"
+      args:
+        creates: "{{ certs_dir }}/app_ok.fullchain.pem"
+
+    # ---------------------------
+    # Crear scripts server HTTPS (python)
+    # ---------------------------
+    - name: Crear servidor HTTPS SOON
+      copy:
+        dest: "{{ lab_root }}/serve_soon.py"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+        content: |
+          import http.server, ssl, os
+          os.chdir("{{ www_dir }}")
+          httpd = http.server.HTTPServer(("0.0.0.0", {{ port_soon }}), http.server.SimpleHTTPRequestHandler)
+          httpd.socket = ssl.wrap_socket(
+              httpd.socket,
+              certfile="{{ certs_dir }}/app_soon.fullchain.pem",
+              keyfile="{{ certs_dir }}/app_soon.key",
+              server_side=True
+          )
+          print("HTTPS SOON en {{ port_soon }}")
+          httpd.serve_forever()
+
+    - name: Crear servidor HTTPS OK
+      copy:
+        dest: "{{ lab_root }}/serve_ok.py"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+        content: |
+          import http.server, ssl, os
+          os.chdir("{{ www_dir }}")
+          httpd = http.server.HTTPServer(("0.0.0.0", {{ port_ok }}), http.server.SimpleHTTPRequestHandler)
+          httpd.socket = ssl.wrap_socket(
+              httpd.socket,
+              certfile="{{ certs_dir }}/app_ok.fullchain.pem",
+              keyfile="{{ certs_dir }}/app_ok.key",
+              server_side=True
+          )
+          print("HTTPS OK en {{ port_ok }}")
+          httpd.serve_forever()
+
+    # ---------------------------
+    # Systemd Units
+    # ---------------------------
+    - name: Crear unit systemd para SOON
+      copy:
+        dest: "/etc/systemd/system/{{ svc_soon }}.service"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=SSL LAB HTTPS SOON ({{ port_soon }})
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ec2-user
+          WorkingDirectory={{ lab_root }}
+          ExecStart=/usr/bin/python3 {{ lab_root }}/serve_soon.py
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Crear unit systemd para OK
+      copy:
+        dest: "/etc/systemd/system/{{ svc_ok }}.service"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=SSL LAB HTTPS OK ({{ port_ok }})
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ec2-user
+          WorkingDirectory={{ lab_root }}
+          ExecStart=/usr/bin/python3 {{ lab_root }}/serve_ok.py
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Recargar systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Habilitar e iniciar servicios HTTPS
+      systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - "{{ svc_soon }}"
+        - "{{ svc_ok }}"
+
+    # ---------------------------
+    # Firewall (si firewalld está activo)
+    # ---------------------------
+    - name: Habilitar firewalld (si no está)
+      systemd:
+        name: firewalld
+        enabled: true
+        state: started
+      failed_when: false
+
+    - name: Abrir puertos de lab (si firewalld está activo)
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - "{{ port_soon }}"
+        - "{{ port_ok }}"
+      failed_when: false
+
+    # ---------------------------
+    # Verificación rápida (evidencia)
+    # ---------------------------
+    - name: Probar TLS SOON con openssl s_client
+      shell: |
+        echo | openssl s_client -connect localhost:{{ port_soon }} -showcerts 2>/dev/null | grep -E "BEGIN CERTIFICATE|subject=|notAfter=" -m 15
+      register: test_soon
+      changed_when: false
+      failed_when: false
+
+    - name: Probar TLS OK con openssl s_client
+      shell: |
+        echo | openssl s_client -connect localhost:{{ port_ok }} -showcerts 2>/dev/null | grep -E "BEGIN CERTIFICATE|subject=|notAfter=" -m 15
+      register: test_ok
+      changed_when: false
+      failed_when: false
+
+    - name: Mostrar evidencia de pruebas
+      debug:
+        msg:
+          - "SOON TLS check (parcial):"
+          - "{{ test_soon.stdout | default('') }}"
+          - "OK TLS check (parcial):"
+          - "{{ test_ok.stdout | default('') }}"
+
+    - name: Mensaje final
+      debug:
+        msg:
+          - "LAB listo."
+          - "Endpoints:"
+          - "  - https://localhost:{{ port_soon }} (cert 30 días -> ALERTA)"
+          - "  - https://localhost:{{ port_ok }} (cert 300 días -> OK)"
+          - "Archivos en: {{ lab_root }}"

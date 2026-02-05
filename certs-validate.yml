@@ -10,7 +10,7 @@
 
     dias_alerta: 90
     dias_reenvio_alerta: 10
-    modo_sin_smtp: true   # En lab: true. En cliente: false cuando SMTP esté listo.
+    modo_sin_smtp: true  # En lab: true. En cliente: false cuando SMTP esté listo.
 
     # Persistencia (LAB friendly)
     pivot_state_dir: /home/ec2-user/cert_monitor/state
@@ -70,7 +70,12 @@
 
     - name: Parsear estado previo
       set_fact:
-        prev_state: "{{ (prev_state_raw.content | b64decode | from_json) if (prev_state_raw is defined and prev_state_raw.content is defined) else {} }}"
+        prev_state: >-
+          {{
+            (prev_state_raw.content | b64decode | from_json)
+            if (prev_state_raw is defined and prev_state_raw.content is defined)
+            else {}
+          }}
       changed_when: false
 
     - name: Inicializar estructuras
@@ -79,97 +84,12 @@
         alert_rows: []
       changed_when: false
 
-    - name: Procesar cada URL (TLS -> principal/intermedio/CA -> expiración)
-      vars:
-        url: "{{ item }}"
-      block:
-        - name: Normalizar host/puerto (SNI)
-          set_fact:
-            host_only: "{{ (url | regex_replace('^https?://', '')).split('/')[0].split(':')[0] }}"
-            port: >-
-              {{
-                ((url | regex_replace('^https?://', '')).split('/')[0].split(':')[1])
-                if (':' in (url | regex_replace('^https?://', '')).split('/')[0])
-                else '443'
-              }}
-          changed_when: false
-
-        - name: Obtener cadena TLS (openssl s_client)
-          shell: |
-            set -o pipefail
-            echo | openssl s_client -servername "{{ host_only }}" -connect "{{ host_only }}:{{ port }}" -showcerts 2>/dev/null
-          register: tls
-          changed_when: false
-          failed_when: false
-
-        - name: Parsear certs y calcular expiración (Python+OpenSSL)
-          shell: |
-            python3 - << 'PY'
-            import re, json, subprocess, datetime, email.utils
-
-            url = {{ url | to_json }}
-            data = {{ (tls.stdout | default('')) | to_json }}
-            dias_alerta = int({{ dias_alerta }})
-
-            certs = re.findall(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", data, re.S)
-            pems = ["-----BEGIN CERTIFICATE-----"+c+"-----END CERTIFICATE-----" for c in certs]
-
-            def meta(pem: str):
-              if not pem:
-                return {"exists": False, "subject": "NO EXISTE", "enddate": "NO EXISTE", "days": "NO EXISTE"}
-              p = subprocess.run(["openssl","x509","-noout","-subject","-enddate"],
-                                 input=pem.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-              out = p.stdout.decode(errors="ignore").splitlines()
-              subj = next((l.replace("subject=","").strip() for l in out if l.startswith("subject=")), "DESCONOCIDO")
-              end  = next((l.replace("notAfter=","").strip() for l in out if l.startswith("notAfter=")), "")
-              if not end:
-                return {"exists": True, "subject": subj, "enddate": "DESCONOCIDO", "days": "NO EXISTE"}
-              dt = email.utils.parsedate_to_datetime(end)
-              if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=datetime.timezone.utc)
-              now = datetime.datetime.now(datetime.timezone.utc)
-              days = (dt - now).days
-              return {"exists": True, "subject": subj, "enddate": end, "days": days}
-
-            principal_pem = pems[0] if len(pems) > 0 else ""
-            inter_pem     = pems[1] if len(pems) > 1 else ""
-            ca_pem        = pems[-1] if len(pems) > 2 else ""
-
-            principal = meta(principal_pem)
-            inter     = meta(inter_pem)
-            ca        = meta(ca_pem)
-
-            def in_alert(m):
-              return isinstance(m.get("days"), int) and m["days"] <= dias_alerta
-
-            estado = "ALERTA" if (in_alert(principal) or in_alert(inter) or in_alert(ca)) else "OK"
-
-            print(json.dumps({
-              "url": url,
-              "principal_subject": principal["subject"],
-              "principal_end": principal["enddate"],
-              "principal_days": principal["days"],
-              "inter_subject": inter["subject"],
-              "inter_end": inter["enddate"],
-              "inter_days": inter["days"],
-              "ca_subject": ca["subject"],
-              "ca_end": ca["enddate"],
-              "ca_days": ca["days"],
-              "estado": estado
-            }))
-            PY
-          register: parsed
-          changed_when: false
-          failed_when: false
-
-        - name: Acumular resultados
-          set_fact:
-            row: "{{ parsed.stdout | from_json }}"
-            rows: "{{ rows + [ (parsed.stdout | from_json) ] }}"
-            alert_rows: "{{ alert_rows + ( [ (parsed.stdout | from_json) ] if ((parsed.stdout | from_json).estado == 'ALERTA') else [] ) }}"
-          changed_when: false
-
+    # 🔥 Parte robusta AAP: iterar URLs vía include_tasks
+    - name: Procesar URLs (TLS -> principal/intermedio/CA -> expiración)
+      include_tasks: tasks/procesar_url.yml
       loop: "{{ urls_certificados }}"
+      loop_control:
+        loop_var: url_item
 
     - name: Generar inventario CSV
       copy:

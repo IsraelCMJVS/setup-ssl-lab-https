@@ -84,9 +84,9 @@
         alert_rows: []
       changed_when: false
 
-    # 🔥 Parte robusta AAP: iterar URLs vía include_tasks
+    # iterar URLs vía include_tasks
     - name: Procesar URLs (TLS -> principal/intermedio/CA -> expiración)
-      include_tasks: tasks/procesar_url.yml
+      include_tasks: tasks/url_process.yml
       loop: "{{ urls_certificados }}"
       loop_control:
         loop_var: url_item

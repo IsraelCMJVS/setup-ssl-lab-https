@@ -1,6 +1,6 @@
 ---
 - name: Validación TLS de certificados por URL (PIVOTE RHEL9 - ec2-user)
-  hosts: pivote
+  hosts: all
   gather_facts: true
   become: true
 

@@ -116,8 +116,7 @@
         send_alert: >-
           {{
             has_alerts and (
-              last_alert_iso == '' or
-              ((now_iso | to_datetime) - (last_alert_iso | to_datetime)).days >= dias_reenvio_alerta
+              last_alert_iso == '' or ((now_iso | to_datetime) - (last_alert_iso | to_datetime)).days >= dias_reenvio_alerta
             )
           }}
       changed_when: false

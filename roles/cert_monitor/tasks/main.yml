@@ -81,28 +81,53 @@
     last_monthly_iso: "{{ prev_state.last_monthly_iso | default('') }}"
   changed_when: false
 
+- name: Normalizar fechas previas a dt_fmt (por compatibilidad con estados antiguos con ISO8601)
+  set_fact:
+    last_alert_iso_norm: >-
+      {{
+        (last_alert_iso
+          | regex_replace('Z$', '')
+          | regex_replace('T', ' ')
+          | regex_replace('\\.\\d+$', '')
+        )
+        if last_alert_iso != '' else ''
+      }}
+    last_monthly_iso_norm: >-
+      {{
+        (last_monthly_iso
+          | regex_replace('Z$', '')
+          | regex_replace('T', ' ')
+          | regex_replace('\\.\\d+$', '')
+        )
+        if last_monthly_iso != '' else ''
+      }}
+  changed_when: false
+
+
 - name: Calcular si toca enviar ALERTA (cada 10 días)
   set_fact:
     send_alert: >-
       {{
         has_alerts and (
-          last_alert_iso == '' or
-          ((now_iso | to_datetime(dt_fmt)) - (last_alert_iso | to_datetime(dt_fmt))).days >= dias_reenvio_alerta
+          last_alert_iso_norm == '' or
+          ((now_iso | to_datetime(dt_fmt)) - (last_alert_iso_norm | to_datetime(dt_fmt))).days >= dias_reenvio_alerta
         )
       }}
   changed_when: false
+
 
 - name: Calcular si toca enviar mensual (sin alertas)
   set_fact:
     send_monthly: >-
       {{
         (not has_alerts) and (
-          last_monthly_iso == '' or
-          ((now_iso | to_datetime(dt_fmt)).month != (last_monthly_iso | to_datetime(dt_fmt)).month) or
-          ((now_iso | to_datetime(dt_fmt)).year != (last_monthly_iso | to_datetime(dt_fmt)).year)
+          last_monthly_iso_norm == '' or
+          ((now_iso | to_datetime(dt_fmt)).month != (last_monthly_iso_norm | to_datetime(dt_fmt)).month) or
+          ((now_iso | to_datetime(dt_fmt)).year != (last_monthly_iso_norm | to_datetime(dt_fmt)).year)
         )
       }}
   changed_when: false
+
 
 - name: Preparar asunto
   set_fact:

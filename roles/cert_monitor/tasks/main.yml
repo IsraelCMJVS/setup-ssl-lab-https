@@ -67,7 +67,7 @@
 
 - name: Generar inventario CSV
   template:
-    src: inventario_certificados.csv.j2
+    src: certs_report.csv.j2
     dest: "{{ csv_path }}"
     owner: ec2-user
     group: ec2-user

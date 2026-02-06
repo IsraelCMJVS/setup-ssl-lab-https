@@ -8,7 +8,7 @@ modo_sin_smtp: true
 pivot_state_dir: /home/ec2-user/cert_monitor/state
 pivot_output_dir: /home/ec2-user/cert_monitor/output
 estado_filename: estado_notificacion.json
-csv_filename: inventario_certificados.csv
+csv_filename: certs_report.csv
 
 smtp_host: ""
 smtp_port: 25

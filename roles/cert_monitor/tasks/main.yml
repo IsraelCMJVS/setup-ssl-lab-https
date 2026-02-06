@@ -1,0 +1,148 @@
+---
+- name: Cargar config del cliente (si existe)
+  include_vars:
+    file: "{{ role_path }}/vars/config.yml"
+  failed_when: false
+  changed_when: false
+
+- name: Validar variables mínimas
+  assert:
+    that:
+      - urls_certificados is iterable
+      - urls_certificados | length > 0
+    fail_msg: "Falta urls_certificados (lista de URLs HTTPS)."
+
+- name: Asegurar paquetes básicos
+  package:
+    name:
+      - openssl
+      - python3
+    state: present
+
+- name: Crear directorios persistentes
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: ec2-user
+    group: ec2-user
+    mode: "0755"
+  loop:
+    - "{{ pivot_state_dir }}"
+    - "{{ pivot_output_dir }}"
+
+- name: Definir paths de trabajo
+  set_fact:
+    estado_path: "{{ pivot_state_dir }}/{{ estado_filename }}"
+    csv_path: "{{ pivot_output_dir }}/{{ csv_filename }}"
+  changed_when: false
+
+- name: Cargar estado previo si existe
+  slurp:
+    src: "{{ estado_path }}"
+  register: prev_state_raw
+  failed_when: false
+  changed_when: false
+
+- name: Parsear estado previo
+  set_fact:
+    prev_state: >-
+      {{
+        (prev_state_raw.content | b64decode | from_json)
+        if (prev_state_raw is defined and prev_state_raw.content is defined)
+        else {}
+      }}
+  changed_when: false
+
+- name: Inicializar estructuras
+  set_fact:
+    rows: []
+    alert_rows: []
+  changed_when: false
+
+- name: Procesar URLs
+  include_tasks: url_process.yml
+  loop: "{{ urls_certificados }}"
+  loop_control:
+    loop_var: url_item
+
+- name: Generar inventario CSV
+  template:
+    src: inventario_certificados.csv.j2
+    dest: "{{ csv_path }}"
+    owner: ec2-user
+    group: ec2-user
+    mode: "0644"
+
+- name: Definir banderas para envío según política
+  set_fact:
+    now_iso: "{{ now(utc=true).strftime(dt_fmt) }}"
+    has_alerts: "{{ (alert_rows | length) > 0 }}"
+    last_alert_iso: "{{ prev_state.last_alert_iso | default('') }}"
+    last_monthly_iso: "{{ prev_state.last_monthly_iso | default('') }}"
+  changed_when: false
+
+- name: Calcular si toca enviar ALERTA (cada 10 días)
+  set_fact:
+    send_alert: >-
+      {{
+        has_alerts and (
+          last_alert_iso == '' or
+          ((now_iso | to_datetime(dt_fmt)) - (last_alert_iso | to_datetime(dt_fmt))).days >= dias_reenvio_alerta
+        )
+      }}
+  changed_when: false
+
+- name: Calcular si toca enviar mensual (sin alertas)
+  set_fact:
+    send_monthly: >-
+      {{
+        (not has_alerts) and (
+          last_monthly_iso == '' or
+          ((now_iso | to_datetime(dt_fmt)).month != (last_monthly_iso | to_datetime(dt_fmt)).month) or
+          ((now_iso | to_datetime(dt_fmt)).year != (last_monthly_iso | to_datetime(dt_fmt)).year)
+        )
+      }}
+  changed_when: false
+
+- name: Preparar asunto
+  set_fact:
+    mail_subject: >-
+      {{
+        ('[ALERTA SSL] ' ~ ambiente_nombre ~ ' - Certificados próximos a vencer')
+        if has_alerts else
+        ('[INFO SSL] ' ~ ambiente_nombre ~ ' - Reporte mensual sin alertas')
+      }}
+  changed_when: false
+
+- name: Renderizar cuerpo del correo
+  set_fact:
+    mail_body: "{{ lookup('template', 'mail_body.j2') }}"
+  changed_when: false
+
+- name: Enviar correo (si aplica)
+  include_tasks: mail_send.yml
+  when: (send_alert or send_monthly) and (not modo_sin_smtp)
+
+- name: Actualizar estado persistente (cuando se envía)
+  copy:
+    dest: "{{ estado_path }}"
+    owner: ec2-user
+    group: ec2-user
+    mode: "0644"
+    content: >-
+      {{
+        {
+          "last_alert_iso": (now_iso if send_alert else last_alert_iso),
+          "last_monthly_iso": (now_iso if send_monthly else last_monthly_iso)
+        } | to_nice_json
+      }}
+  when: (send_alert or send_monthly)
+
+- name: Resumen final
+  debug:
+    msg:
+      - "CSV: {{ csv_path }}"
+      - "Estado: {{ estado_path }}"
+      - "URLs evaluadas: {{ rows | length }}"
+      - "URLs en alerta: {{ alert_rows | length }}"
+      - "send_alert={{ send_alert }}, send_monthly={{ send_monthly }}"

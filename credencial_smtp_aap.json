@@ -1,0 +1,22 @@
+Credential types - add - nombre SMTP Credentials - Input COnf:
+
+{
+  "fields": [
+    {"id": "smtp_username", "type": "string", "label": "SMTP Username"},
+    {"id": "smtp_password", "type": "string", "label": "SMTP Password", "secret": true}
+  ],
+  "required": []
+}
+
+Injector Configuration
+
+{
+  "extra_vars": {
+    "smtp_username": "{{ smtp_username }}",
+    "smtp_password": "{{ smtp_password }}"
+  }
+}
+
+Credentials - add - la SMTP
+user/pass
+save

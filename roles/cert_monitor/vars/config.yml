@@ -1,0 +1,22 @@
+---
+urls_certificados:
+  - https://127.0.0.1:8443
+  - https://127.0.0.1:9443
+
+dias_alerta: 90
+dias_reenvio_alerta: 10
+ambiente_nombre: "CERTIFICADOS WEB"
+
+pivot_state_dir: /home/ec2-user/cert_monitor/state
+pivot_output_dir: /home/ec2-user/cert_monitor/output
+
+modo_sin_smtp: true
+
+smtp_host: "smtp.cliente.com"
+smtp_port: 587
+smtp_use_starttls: true
+correo_from: "cert-monitor@cliente.com"
+correo_to:
+  - "operaciones@cliente.com"
+  - "seguridad@cliente.com"
+

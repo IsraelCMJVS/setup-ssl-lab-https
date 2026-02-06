@@ -1,0 +1,46 @@
+---
+- name: Enviar correo vía SMTP
+  shell: |
+    python3 - << 'PY'
+    import os, ssl, smtplib
+    from email.message import EmailMessage
+
+    smtp_host = {{ smtp_host | to_json }}
+    smtp_port = int({{ smtp_port }})
+    use_starttls = bool({{ smtp_use_starttls | to_json }})
+    username = {{ smtp_username | to_json }}
+    password = {{ smtp_password | to_json }}
+    mail_from = {{ correo_from | to_json }}
+    mail_to = {{ correo_to | to_json }}
+    subject = {{ mail_subject | to_json }}
+    body = {{ mail_body | to_json }}
+    attach_path = {{ csv_path | to_json }}
+
+    if not smtp_host:
+      raise SystemExit("smtp_host vacío.")
+
+    msg = EmailMessage()
+    msg["From"] = mail_from
+    msg["To"] = ", ".join(mail_to)
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with open(attach_path, "rb") as f:
+      msg.add_attachment(f.read(), maintype="text", subtype="csv", filename=os.path.basename(attach_path))
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+      s.ehlo()
+      if use_starttls:
+        ctx = ssl.create_default_context()
+        s.starttls(context=ctx)
+        s.ehlo()
+      if username and password:
+        s.login(username, password)
+      s.send_message(msg)
+
+    print("Correo enviado OK")
+    PY
+  args:
+    executable: /bin/bash
+  register: mail_result
+  changed_when: false

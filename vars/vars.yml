@@ -1,0 +1,9 @@
+urls_certificados:
+  - https://localhost:8443
+  - https://localhost:9443
+modo_sin_smtp: true
+ambiente_nombre: LAB SSL DEMO
+pivot_state_dir: /home/ec2-user/cert_monitor/state
+pivot_output_dir: /home/ec2-user/cert_monitor/output
+dias_alerta: 90
+dias_reenvio_alerta: 10

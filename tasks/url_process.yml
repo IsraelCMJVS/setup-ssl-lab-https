@@ -89,4 +89,3 @@
     rows: "{{ rows + [ (parsed.stdout | from_json) ] }}"
     alert_rows: "{{ alert_rows + ( [ (parsed.stdout | from_json) ] if ((parsed.stdout | from_json).estado == 'ALERTA') else [] ) }}"
   changed_when: false
-

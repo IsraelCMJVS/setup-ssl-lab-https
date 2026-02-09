@@ -10,7 +10,7 @@ ambiente_nombre: "CERTIFICADOS WEB"
 pivot_state_dir: /home/ec2-user/cert_monitor/state
 pivot_output_dir: /home/ec2-user/cert_monitor/output
 
-modo_sin_smtp: true
+modo_sin_smtp: false
 
 smtp_host: "smtp.cliente.com"
 smtp_port: 587

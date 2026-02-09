@@ -180,17 +180,32 @@
         group: ec2-user
         mode: "0755"
         content: |
-          import http.server, ssl, os
-          os.chdir("{{ www_dir }}")
-          httpd = http.server.HTTPServer(("0.0.0.0", {{ port_soon }}), http.server.SimpleHTTPRequestHandler)
-          httpd.socket = ssl.wrap_socket(
-              httpd.socket,
-              certfile="{{ certs_dir }}/app_soon.fullchain.pem",
-              keyfile="{{ certs_dir }}/app_soon.key",
-              server_side=True
-          )
-          print("HTTPS SOON en {{ port_soon }}")
+          import http.server
+          import ssl
+          import os
+          import socketserver
+
+          PORT = 8443
+          WEB_DIR = "/home/ec2-user/ssl-lab/www"
+          CERT = "/home/ec2-user/ssl-lab/certs/app_soon.fullchain.pem"
+          KEY = "/home/ec2-user/ssl-lab/certs/app_soon.key"
+
+          os.chdir(WEB_DIR)
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              pass
+
+          httpd = socketserver.TCPServer(("0.0.0.0", PORT), Handler)
+          httpd.allow_reuse_address = True
+
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain(certfile=CERT, keyfile=KEY)
+
+          httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+
+          print(f"HTTPS LAB SOON running on {PORT}")
           httpd.serve_forever()
+
 
     - name: Crear servidor HTTPS OK
       copy:
@@ -199,17 +214,32 @@
         group: ec2-user
         mode: "0755"
         content: |
-          import http.server, ssl, os
-          os.chdir("{{ www_dir }}")
-          httpd = http.server.HTTPServer(("0.0.0.0", {{ port_ok }}), http.server.SimpleHTTPRequestHandler)
-          httpd.socket = ssl.wrap_socket(
-              httpd.socket,
-              certfile="{{ certs_dir }}/app_ok.fullchain.pem",
-              keyfile="{{ certs_dir }}/app_ok.key",
-              server_side=True
-          )
-          print("HTTPS OK en {{ port_ok }}")
+          import http.server
+          import ssl
+          import os
+          import socketserver
+
+          PORT = 9443
+          WEB_DIR = "/home/ec2-user/ssl-lab/www"
+          CERT = "/home/ec2-user/ssl-lab/certs/app_ok.fullchain.pem"
+          KEY = "/home/ec2-user/ssl-lab/certs/app_ok.key"
+
+          os.chdir(WEB_DIR)
+
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              pass
+
+          httpd = socketserver.TCPServer(("0.0.0.0", PORT), Handler)
+          httpd.allow_reuse_address = True
+
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain(certfile=CERT, keyfile=KEY)
+
+          httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+
+          print(f"HTTPS LAB OK running on {PORT}")
           httpd.serve_forever()
+
 
     # ---------------------------
     # Systemd Units

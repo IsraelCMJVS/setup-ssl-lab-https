@@ -258,24 +258,40 @@
         mode: '0755'
         recurse: true
 
-    - name: Permisos para certificados .pem y .crt
-      ansible.builtin.file:
-        path: "{{ item }}"
-        mode: '0644'
-      loop: >
-        {{ lookup('ansible.builtin.fileglob',
-        '/home/ec2-user/ssl-lab/certs/*.pem', wantlist=True)
-        +
-        lookup('ansible.builtin.fileglob',
-        '/home/ec2-user/ssl-lab/certs/*.crt', wantlist=True) }}
+    - name: Buscar certificados .pem y .crt en el host remoto
+      ansible.builtin.find:
+        paths: /home/ec2-user/ssl-lab/certs
+        patterns:
+          - "*.pem"
+          - "*.crt"
+        file_type: file
+      register: cert_files
+      failed_when: false
 
-    - name: Permisos seguros para llaves privadas .key
+    - name: Permisos para certificados .pem y .crt (0644)
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ item.path }}"
+        mode: '0644'
+      loop: "{{ cert_files.files | default([]) }}"
+      when: (cert_files.matched | default(0)) | int > 0
+
+    - name: Buscar llaves privadas .key en el host remoto
+      ansible.builtin.find:
+        paths: /home/ec2-user/ssl-lab/certs
+        patterns: "*.key"
+        file_type: file
+      register: key_files
+      failed_when: false
+
+    - name: Permisos seguros para llaves privadas .key (0600) + owner ec2-user
+      ansible.builtin.file:
+        path: "{{ item.path }}"
         owner: ec2-user
         group: ec2-user
         mode: '0600'
-      loop: "{{ lookup('ansible.builtin.fileglob', '/home/ec2-user/ssl-lab/certs/*.key', wantlist=True) }}"
+      loop: "{{ key_files.files | default([]) }}"
+      when: (key_files.matched | default(0)) | int > 0
+
     
     # ---------------------------
     # Systemd Units

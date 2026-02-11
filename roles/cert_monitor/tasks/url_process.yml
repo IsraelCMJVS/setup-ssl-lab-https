@@ -37,20 +37,51 @@
 
     def meta(pem: str):
       if not pem:
-        return {"exists": False, "subject": "NO EXISTE", "enddate": "NO EXISTE", "days": "NO EXISTE"}
-      p = subprocess.run(["openssl","x509","-noout","-subject","-enddate"],
-                         input=pem.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return {
+          "exists": False,
+          "subject": "NO EXISTE",
+          "serial": "NO EXISTE",
+          "enddate": "NO EXISTE",
+          "days": "NO EXISTE"
+        }
+
+      p = subprocess.run(
+          ["openssl","x509","-noout","-subject","-enddate","-serial"],
+          input=pem.encode(),
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE
+      )
+
       out = p.stdout.decode(errors="ignore").splitlines()
+
       subj = next((l.replace("subject=","").strip() for l in out if l.startswith("subject=")), "DESCONOCIDO")
       end  = next((l.replace("notAfter=","").strip() for l in out if l.startswith("notAfter=")), "")
+      serial = next((l.replace("serial=","").strip() for l in out if l.startswith("serial=")), "DESCONOCIDO")
+
       if not end:
-        return {"exists": True, "subject": subj, "enddate": "DESCONOCIDO", "days": "NO EXISTE"}
+        return {
+          "exists": True,
+          "subject": subj,
+          "serial": serial,
+          "enddate": "DESCONOCIDO",
+          "days": "NO EXISTE"
+        }
+
       dt = email.utils.parsedate_to_datetime(end)
       if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
+
       now = datetime.datetime.now(datetime.timezone.utc)
       days = (dt - now).days
-      return {"exists": True, "subject": subj, "enddate": end, "days": days}
+
+      return {
+        "exists": True,
+        "subject": subj,
+        "serial": serial,
+        "enddate": end,
+        "days": days
+      }
+
 
     principal_pem = pems[0] if len(pems) > 0 else ""
     inter_pem     = pems[1] if len(pems) > 1 else ""
@@ -67,17 +98,25 @@
 
     print(json.dumps({
       "url": url,
+
       "principal_subject": principal["subject"],
+      "principal_serial": principal["serial"],
       "principal_end": principal["enddate"],
       "principal_days": principal["days"],
+
       "inter_subject": inter["subject"],
+      "inter_serial": inter["serial"],
       "inter_end": inter["enddate"],
       "inter_days": inter["days"],
+
       "ca_subject": ca["subject"],
+      "ca_serial": ca["serial"],
       "ca_end": ca["enddate"],
       "ca_days": ca["days"],
+
       "estado": estado
     }))
+
     PY
   register: parsed
   changed_when: false

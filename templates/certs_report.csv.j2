@@ -1,4 +1,17 @@
-URL,Cert_Principal,Vigencia_Principal,Dias_Principal,Cert_Intermedio,Vigencia_Intermedio,Dias_Intermedio,Cert_CA,Vigencia_CA,Dias_CA,Estado
+URL,Cert_Principal,Serial_Principal,Vigencia_Principal,Dias_Principal,Cert_Intermedio,Serial_Intermedio,Vigencia_Intermedio,Dias_Intermedio,Cert_CA,Serial_CA,Vigencia_CA,Dias_CA,Estado
 {% for r in rows %}
-{{ r.url }},{{ r.principal_subject | replace(',', ' ') }},{{ r.principal_end | replace(',', ' ') }},{{ r.principal_days }},{{ r.inter_subject | replace(',', ' ') }},{{ r.inter_end | replace(',', ' ') }},{{ r.inter_days }},{{ r.ca_subject | replace(',', ' ') }},{{ r.ca_end | replace(',', ' ') }},{{ r.ca_days }},{{ r.estado }}
+{{ r.url }},
+{{ r.principal_subject | replace(',', ' ') }},
+{{ r.principal_serial }},
+{{ r.principal_end | replace(',', ' ') }},
+{{ r.principal_days }},
+{{ r.inter_subject | replace(',', ' ') }},
+{{ r.inter_serial }},
+{{ r.inter_end | replace(',', ' ') }},
+{{ r.inter_days }},
+{{ r.ca_subject | replace(',', ' ') }},
+{{ r.ca_serial }},
+{{ r.ca_end | replace(',', ' ') }},
+{{ r.ca_days }},
+{{ r.estado }}
 {% endfor %}
